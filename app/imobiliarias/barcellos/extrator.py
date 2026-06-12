@@ -1,6 +1,11 @@
 """
-Extração de dados dos PDFs da Barcellos.
-...
+A Barcellos gera PDFs em dois layouts distintos:
+
+  - LAYOUT RECIBO
+  - LAYOUT FATURA
+
+A função extrair_boleto() detecta o layout automaticamente e
+segue o fluxo correspondente.
 """
 
 import re
@@ -12,7 +17,9 @@ from PyPDF2 import PdfReader
 from app.classes.boleto import Boleto
 from app.utils.formatarCodigoBarras import linha_digitavel_para_codigo_barras
 from app.imobiliarias.barcellos.config import PASTA_PROCESSADOS
-from app.imobiliarias.barcellos.normalizar_taxas import _NORMALIZACOES_TAXA
+from app.imobiliarias.barcellos.normalizar_taxas import _safe_search
+from app.imobiliarias.barcellos.fatura import _extrair_taxas_fatura
+from app.imobiliarias.barcellos.recibo import _extrair_taxas_recibo
 
 # ---------------------------------------------------------------------------
 # Padrões regex
@@ -28,107 +35,6 @@ _NOME_COND_REC    = r'Condomino\s*:\s*(.+?)\s*-\s*[\d\*\.\/-]+'
 _VENCIMENTO       = r'\b(0[1-9]|[12][0-9]|3[01])/(0[1-9]|1[0-2])/\d{4}\b'
 _ENDERECO_REC     = r'Endereço\s*:?\s*(.+)'
 _COMPLEMENTO_REC  = r'Unidades\s*:?\s*(.*?)\s*S[ÉE]RIE'
-
-
-def _safe_search(pattern, text, group=0):
-    m = re.search(pattern, text)
-    return m.group(group).strip() if m else None
-
-
-
-
-def _normalizar_taxa(taxa: str) -> str:                                 
-    t = taxa.upper()
-    for condicao, nome in _NORMALIZACOES_TAXA:
-        if condicao(t):
-            return nome
-    return taxa.strip()
-
-
-# ---------------------------------------------------------------------------
-# Extração de taxas — FATURA
-# ---------------------------------------------------------------------------
-def _extrair_taxas_fatura(texto):
-    linhas     = texto.split('\n')
-    taxas      = []
-    lendo      = False
-    valor_re   = re.compile(r'(\d{1,3}(?:\.\d{3})*,\d{2})')
-    parcelas_re = re.compile(r'(\d{1,2})/(\d{1,2})$')
-
-    for linha in linhas:
-        linha = linha.strip()
-        if not lendo:
-            if re.search(r'Descrição\s+Valor', linha):
-                lendo = True
-            continue
-        if re.match(r'^TOTAL', linha):
-            break
-
-        matches = list(valor_re.finditer(linha))
-        if not matches:
-            continue
-
-        ultimo = matches[-1]
-        valor  = ultimo.group(1)
-        nome   = linha[:ultimo.start()].strip()
-
-        parcela_atual = total_parcelas = 1
-        pm = parcelas_re.search(nome)
-        if pm:
-            parcela_atual  = int(pm.group(1))
-            total_parcelas = int(pm.group(2))
-            nome = parcelas_re.sub('', nome).strip()
-
-        taxas.append({
-            'taxa': _normalizar_taxa(nome),                    
-            'valor': valor,
-            'parcela_atual': parcela_atual,
-            'total_parcelas': total_parcelas,
-        })
-    return taxas
-
-
-# ---------------------------------------------------------------------------
-# Extração de taxas — RECIBO
-# ---------------------------------------------------------------------------
-def _extrair_taxas_recibo(texto):
-    linhas      = texto.strip().split('\n')
-    texto_taxas = ''
-    lendo       = False
-    parcelas_re = re.compile(r'(\d{1,2})\s*/\s*(\d{1,2})')
-
-    for linha in linhas:
-        linha = linha.strip()
-        if linha.upper() == 'TAXAS':
-            lendo = True
-            continue
-        if lendo and (linha.startswith('MENSAGENS') or linha.startswith('DEMONSTRATIVO')):
-            break
-        if lendo:
-            texto_taxas += ' ' + linha
-
-    texto_taxas = re.sub(r'\([^)]*\)', '', texto_taxas)
-    taxas = []
-
-    for nome, valor in re.findall(r'([A-ZÀ-Úa-zà-ú\s/0-9-]+?)\s+(\d+(?:[.,]\d{2}))', texto_taxas):
-        nome = nome.strip().replace('FDO', 'FUNDO')
-        nome = re.sub(r'\s+', ' ', nome)
-
-
-        parcela_atual = total_parcelas = 1
-        pm = parcelas_re.search(nome)
-        if pm:
-            parcela_atual  = int(pm.group(1))
-            total_parcelas = int(pm.group(2))
-            nome = parcelas_re.sub('', nome).strip()
-
-        taxas.append({
-            'taxa': _normalizar_taxa(nome),                                   
-            'valor': valor.replace('.', ','),
-            'parcela_atual': parcela_atual,
-            'total_parcelas': total_parcelas,
-        })
-    return taxas
 
 # ---------------------------------------------------------------------------
 # Função principal

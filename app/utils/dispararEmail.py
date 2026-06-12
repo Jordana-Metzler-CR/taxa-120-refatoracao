@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 from email.message import EmailMessage
 from datetime import datetime
 from app.config import env
+from app.repositories.conexao import conectar_banco
+from app.repositories.consultas import buscar_logs
 
 load_dotenv()
 
@@ -66,14 +68,9 @@ def enviarEmailRelatorio(nome_imobiliaria: str, arquivo_operacional: str) -> boo
     assunto         = f"Execução Taxa 120 - {nome_imobiliaria} ({datetime.now().strftime('%m/%Y')})"
     arquivo_tecnico = f"logs_taxa_120_{datetime.now().strftime('%Y%m%d')}.xlsx"
 
-    conn = psycopg2.connect(
-        host=env("DB_HOST"), port=env("DB_PORT"),
-        database=env("DB_BANCO"), user=env("DB_USER"), password=env("DB_SENHA")
-    )
+    conn = conectar_banco()
     try:
-        df = pd.read_sql(
-           "SELECT * FROM logs_taxa_120 WHERE data_e_horario >= NOW() - INTERVAL '1 hour'", conn
-        )
+        df = buscar_logs(conn)
     finally:
         conn.close()
     df.to_excel(arquivo_tecnico, index=False)

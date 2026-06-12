@@ -3,13 +3,8 @@ Extração de dados dos PDFs da Fonte Nova.
 
 A Fonte Nova gera PDFs em dois layouts distintos:
 
-  LAYOUT ANTIGO (virtualimobi): tabela de duas colunas lado a lado
-    - Cabeçalho: "Histórico Valor Histórico Valor"
-    - Taxas intercaladas em duas colunas na mesma linha
-
-  LAYOUT NOVO (recibo): coluna única, uma taxa por linha
-    - Cabeçalho: "RECIBO DO PAGADOR"
-    - Cada linha: NOME_TAXA [parcela] valor
+  - LAYOUT ANTIGO (virtualimobi)
+  - LAYOUT NOVO (recibo pagador)
 
 A função extrair_boleto() detecta o layout automaticamente e
 despacha para o parser correto.
@@ -18,208 +13,17 @@ despacha para o parser correto.
 import re
 import shutil
 from pathlib import Path
-
 import pdfplumber
 import pytesseract
-
-from app.imobiliarias.fontenova.normalizar_taxas import _NORMALIZACOES_TAXA
+from app.imobiliarias.fontenova.normalizar_taxas import _NORMALIZACOES_TAXA, _normalizar_taxa, _safe_search
+from app.imobiliarias.fontenova.recibo_pagador import _extrair_campos_layout_novo, _extrair_taxas_layout_novo
+from app.imobiliarias.fontenova.virtualimobi import _extrair_campos_layout_antigo, _extrair_taxas_layout_antigo
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 from app.classes.boleto import Boleto
 from app.imobiliarias.fontenova.config import PASTA_PROCESSADOS
 from app.utils.formatarCodigoBarras import extrai_valor_codigo_barras, extrai_vencimento, linha_digitavel_para_codigo_barras
-
-
-
-# ---------------------------------------------------------------------------
-# Normalização de nomes de taxas
-# ---------------------------------------------------------------------------
-def _safe_search(pattern, text, group=1, flags=re.IGNORECASE | re.MULTILINE):
-    m = re.search(pattern, text, flags)
-    return m.group(group).strip() if m else None
-
-
-def _normalizar_taxa(taxa: str) -> str:
-    t = taxa.upper()
-    for condicao, nome in _NORMALIZACOES_TAXA:
-        if condicao(t):
-            return nome
-    return taxa.strip()
-
-
-def _limpar_documento(documento: str) -> str | None:
-    if not documento:
-        return None
-    # Remove só separadores de formatação, preserva dígitos e asteriscos
-    doc = re.sub(r'[.\-/\s]', '', documento)
-    if not doc:
-        return None
-    return doc
-
-
-# ---------------------------------------------------------------------------
-# layout ANTIGO — duas colunas (virtualimobi)
-# ---------------------------------------------------------------------------
-def _extrair_taxas_layout_antigo(texto: str) -> list:
-    """
-    Isola o bloco entre 'Histórico Valor Histórico Valor' e 'Total até o vencimento',
-    lineariza as duas colunas e consome token a token.
-    """
-    inicio = re.search(r'Histórico\s+Valor\s+Histórico\s+Valor', texto, re.IGNORECASE)
-    fim    = re.search(r'Total\s+até\s+o\s+vencimento', texto, re.IGNORECASE)
-    if not inicio or not fim:
-        return []
-
-    linha = texto[inicio.end():fim.start()].replace('\n', ' ')
-
-    # Normaliza CONDOMINIO
-    linha = re.sub(
-        r'(CONDOM[IÍ]NIO)\s*(?:[-–—]\s*)?(?:(?:BLOCO\s+)?[A-Z\.])?\s*(\d{1,3}(?:\.\d{3})*,\d{2})',
-        r'CONDOMINIO \2',
-        linha, flags=re.IGNORECASE
-    )
-    # GÁS com CONDOMINIO embutido
-    linha = re.sub(
-        r'G[ÁA]S\s*[-–—]?\s*Leituras:.*?Dt\.?ant:\d{2}/\d{2}/\d{2}\s*'
-        r'CONDOM[IÍ]NIO\s*(\d{1,3}(?:\.\d{3})*,\d{2})\s*'
-        r'(\d{1,3}(?:\.\d{3})*,\d{2})\s*atual:\d{2}/\d{2}/\d{2}',
-        r'CONDOMINIO \1 GÁS \2',
-        linha, flags=re.IGNORECASE
-    )
-    # GÁS
-    linha = re.sub(
-        r'G[ÁA]S\s*[-–—]?\s*Leituras:.*?atual:\d{2}/\d{2}/\d{2}\s*(\d{1,3}(?:\.\d{3})*,\d{2})',
-        r'GÁS \1',
-        linha, flags=re.IGNORECASE
-    )
-    # Valores negativos: (-)100,00 → -100,00
-    linha = re.sub(r'\(-\)\s*(\d{1,3}(?:\.\d{3})*,\d{2})', r'-\1', linha)
-
-    tokens     = linha.split()
-    valor_re   = re.compile(r'^-?\d{1,3}(?:\.\d{3})*,\d{2}$')
-    parcela_re = re.compile(r'^(\d{1,2})/(\d{1,2})$')
-    taxas          = []
-    nome_atual     = ""
-    valor_atual    = None
-    parcela_atual  = 1
-    total_parcelas = 1
-    extraiu        = False
-
-    for token in tokens:
-        if not nome_atual:
-            nome_atual = token
-            continue
-        if valor_re.match(token):
-            valor_atual = token
-            extraiu     = True
-            continue
-        if parcela_re.match(token):
-            pm = parcela_re.match(token)
-            if not valor_atual:
-                parcela_atual, total_parcelas = int(pm.group(1)), int(pm.group(2))
-                extraiu = True
-            else:
-                parcela_atual, total_parcelas = int(pm.group(1)), int(pm.group(2))
-                taxas.append({
-                    'taxa': _normalizar_taxa(nome_atual.strip()),
-                    'valor': valor_atual.strip(),
-                    'parcela_atual': parcela_atual,
-                    'total_parcelas': total_parcelas,
-                })
-                nome_atual = ""; valor_atual = None
-                parcela_atual = total_parcelas = 1; extraiu = False
-            continue
-        if extraiu and valor_atual:
-            taxas.append({
-                'taxa': _normalizar_taxa(nome_atual.strip()),
-                'valor': valor_atual.strip(),
-                'parcela_atual': parcela_atual,
-                'total_parcelas': total_parcelas,
-            })
-            nome_atual = token; valor_atual = None
-            parcela_atual = total_parcelas = 1; extraiu = False
-            continue
-        if not extraiu:
-            nome_atual += " " + token
-
-    if nome_atual and valor_atual:
-        taxas.append({
-            'taxa': _normalizar_taxa(nome_atual.strip()),
-            'valor': valor_atual.strip(),
-            'parcela_atual': parcela_atual,
-            'total_parcelas': total_parcelas,
-        })
-    return taxas
-
-
-# ---------------------------------------------------------------------------
-# layout NOVO — coluna única, uma taxa por linha
-# ---------------------------------------------------------------------------
-def _extrair_taxas_layout_novo(texto: str) -> list:
-    """
-    Lê linha a linha entre 'Demonstrativo da cobrança' e 'Total até o vencimento'.
-    Cada linha tem: NOME_TAXA [parcela] valor
-    O GÁS ocupa uma linha inteira com a descrição de leitura.
-    """
-    
-    
-    inicio = re.search(r'Demonstrativo da cobran', texto, re.IGNORECASE)
-    fim = re.search(r'Total\s+até\s+o\s+vencimento', texto, re.IGNORECASE)
-    if not fim:
-        fim = re.search(r'Valor\s+do\s+desconto\s+até\s+o\s+vencimento', texto, re.IGNORECASE)
-    if not inicio or not fim:
-        return []
-
-
-    bloco  = texto[inicio.end():fim.start()]
-    linhas = [l.strip() for l in bloco.split('\n') if l.strip()]
-
-    valor_re   = re.compile(r'(\d{1,3}(?:\.\d{3})*,\d{2})$')
-    parcela_re = re.compile(r'(\d{1,2})/(\d{1,2})')
-    gas_re     = re.compile(
-        r'G[ÁA]S\s*[-–]?\s*Leituras:.*?atual:\s*\d{2}/\d{2}/\d{2}\s+(\d{1,3}(?:\.\d{3})*,\d{2})',
-        re.IGNORECASE
-    )
-
-    taxas = []
-    for linha in linhas:
-        # GÁS com descrição longa
-        m_gas = gas_re.search(linha)
-        if m_gas:
-            taxas.append({
-                'taxa': 'GÁS',
-                'valor': m_gas.group(1),
-                'parcela_atual': 1,
-                'total_parcelas': 1,
-            })
-            continue
-
-        # Linha normal: termina com valor numérico
-        m_val = valor_re.search(linha)
-        if not m_val:
-            continue
-
-        valor = m_val.group(1)
-        nome  = linha[:m_val.start()].strip()
-
-        # Parcela embutida no nome (ex: "SEG. INCENDIO 05/6" ou "REFORMA FACHADA 1/60")
-        parcela_atual = total_parcelas = 1
-        m_par = parcela_re.search(nome)
-        if m_par:
-            parcela_atual  = int(m_par.group(1))
-            total_parcelas = int(m_par.group(2))
-            nome = nome[:m_par.start()].strip()
-
-        if not nome:
-            continue
-        taxas.append({
-            'taxa': _normalizar_taxa(nome),
-            'valor': valor,
-            'parcela_atual': parcela_atual,
-            'total_parcelas': total_parcelas,
-        })
-    return taxas
 
 
 # ---------------------------------------------------------------------------
@@ -229,47 +33,6 @@ def _detectar_layout(texto: str) -> str:
     if re.search(r'RECIBO DO PAGADOR', texto, re.IGNORECASE):
         return 'novo'
     return 'antigo'
-
-
-def _extrair_campos_layout_antigo(texto: str) -> dict:
-    nome_predio = _safe_search(r'CONDOM[IÍ]NIO\s*[:\-]?\s*\d+\s*-\s*([A-Z.\s]+?)\s*(?:\n|$)', texto)
-    endereco    = _safe_search(r'CONDOM[IÍ]NIO[^\r\n]*[\r\n]+([A-ZÁÉÍÓÚÃÕÇ\s,.]+?,\s*\d+)', texto)
-    nome_cond   = _safe_search(r'COND[ÔO]MINO\s*[:\-]?\s*[\r\n]*([A-ZÁÉÍÓÚÃÕÇ.\s\/\-]+?)\s*(?:UNIDADE|COMPETÊNCIA|$)', texto)
-    complemento = _safe_search(r'UNIDADE\s*:\s*[\r\n]*([A-Z0-9.\s\-]+?)\s*(?:COMPETÊNCIA|$)', texto)
-    competencia = _safe_search(r'Compet[eê]ncia\s*[:\-]?\s*(\d{2}\/\d{4})', texto) or 'extra'
-    vencimento  = _safe_search(r'Vencimento:\s*(\d{2}/\d{2}/\d{4})', texto)
-    documento   = _limpar_documento(_safe_search(r'CPF\/?CNPJ\s*[:\-]?\s*([0-9\s.\-\/\*]+)', texto))
-    return dict(nome_predio=nome_predio, endereco=endereco, nome_cond=nome_cond,
-                complemento=complemento, competencia=competencia,
-                vencimento=vencimento, documento=documento)
-
-
-def _extrair_campos_layout_novo(texto: str) -> dict:
-    # nome_predio: para antes de VENCIMENTO ou V E N C I M E N T O ou \n
-    nome_predio = _safe_search(
-        r'Condom[íi]nio\s*:\s*\d+\s*-\s*([A-ZÁÉÍÓÚÂÊÔÃÕÇa-záéíóúâêôãõç.\s]+?)'
-        r'(?:\s+V(?:\s+E\s+N\s+C\s+I\s+M\s+E\s+N\s+T\s+O|ENCIMENTO)|\n)',
-        texto)
-    endereco    = _safe_search(
-        r'Condom[íi]nio\s*:[^\n]+\n([A-ZÁÉÍÓÚÂÊÔÃÕÇa-záéíóúâêôãõç\s,.]+?,\s*\d+)',
-        texto)
-    # Condômino: pega tudo após o ":" até fim de linha (sem exigir data na mesma linha)
-    nome_cond   = _safe_search(
-        r'Cond[oô]mino\s*:\s*(.+?)(?:\s+\d{2}/\d{2}/\d{4})?\s*$',
-        texto, flags=re.IGNORECASE | re.MULTILINE)
-    complemento = _safe_search( r'Unidade\s*[:\-]?\s*([A-Za-z0-9 ]+?)\s*Compet\.', texto)
-    competencia = _safe_search(r'Compet[êe]ncia\s*:\s*(\d{2}/\d{4})', texto) or 'extra'
-    # Vencimento: tenta na linha do pagamento, depois na Unidade, depois em qualquer linha após Condômino
-    vencimento  = _safe_search(r'PAGAMENTO EM[^\n]+\n(\d{2}/\d{2}/\d{4})', texto)
-    if not vencimento:
-        vencimento = _safe_search(r'Unidade\s*:[^\n]+(\d{2}/\d{2}/\d{4})', texto)
-    if not vencimento:
-        vencimento = _safe_search(r'Cond[oô]mino\s*:[^\n]+(\d{2}/\d{2}/\d{4})', texto)
-    # Documento vem no rodapé: "NOME CPF/CNPJ:xxx"
-    documento   = _limpar_documento(_safe_search(r'CPF/CNPJ:\s*([0-9\*\.\-\/]+)', texto))
-    return dict(nome_predio=nome_predio, endereco=endereco, nome_cond=nome_cond,
-                complemento=complemento, competencia=competencia,
-                vencimento=vencimento, documento=documento)
 
 
 def _extrair_texto_pdf(caminho: Path, logger) -> str:
@@ -291,8 +54,6 @@ def _extrair_texto_pdf(caminho: Path, logger) -> str:
             pil_img = page.to_image(resolution=200).original
             paginas_ocr.append(pytesseract.image_to_string(pil_img, lang='por', config="--psm 6"))
         return "\n".join(paginas_ocr)
-
-
 # ---------------------------------------------------------------------------
 # Função principal
 # ---------------------------------------------------------------------------
@@ -308,7 +69,6 @@ def extrair_boleto(caminho_pdf: Path, logger) -> Boleto:
     logger.sucesso("Extração dos Dados", f"Iniciando extração do boleto {nome_arquivo}")
 
     texto  = _extrair_texto_pdf(caminho_pdf, logger)
-    #print(texto)
     layout = _detectar_layout(texto)
     logger.sucesso("Extração dos Dados", f"Layout detectado: {layout}")
 
@@ -332,12 +92,11 @@ def extrair_boleto(caminho_pdf: Path, logger) -> Boleto:
     linha_dig = _safe_search(
         r'(\d{5}\.\d{5}\s+\d{5}\.\d{6}\s+\d{5}\.\d{6}\s+\d{1}\s+\d{14})',
         texto)
+    
     if linha_dig:
         compt = extrai_vencimento(linha_dig)
-        #print(f"Competência extraída: {compt}")
         clean_codigo = re.sub(r'\D', '', linha_dig)
         valor_bruto = extrai_valor_codigo_barras(clean_codigo)
-        #print(f"Codigo de barras normal: {valor_bruto}")
         try:
             codigo_barras = linha_digitavel_para_codigo_barras(linha_dig)
         except Exception:

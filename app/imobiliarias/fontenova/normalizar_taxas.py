@@ -1,3 +1,6 @@
+import re
+
+
 _NORMALIZACOES_TAXA = [
     (lambda t: 'CONDOMINIO' in t or 'CONDOMÍNIO' in t,                                       'CONDOMINIO'),
     (lambda t: 'GÁS' in t or 'GAS' in t,                                                     'GÁS'),
@@ -41,3 +44,30 @@ _NORMALIZACOES_TAXA = [
     (lambda t: 'PPCI' in t,                                                                     'PPCI'),
     (lambda t: 'DEDE' in t,                                                                     'DEDETIZAÇAO'),
 ]
+
+
+
+# ---------------------------------------------------------------------------
+# Normalização de nomes de taxas
+# ---------------------------------------------------------------------------
+def _safe_search(pattern, text, group=1, flags=re.IGNORECASE | re.MULTILINE):
+    m = re.search(pattern, text, flags)
+    return m.group(group).strip() if m else None
+
+
+def _normalizar_taxa(taxa: str) -> str:
+    t = taxa.upper()
+    for condicao, nome in _NORMALIZACOES_TAXA:
+        if condicao(t):
+            return nome
+    return taxa.strip()
+
+
+def _limpar_documento(documento: str) -> str | None:
+    if not documento:
+        return None
+    # Remove só separadores de formatação, preserva dígitos e asteriscos
+    doc = re.sub(r'[.\-/\s]', '', documento)
+    if not doc:
+        return None
+    return doc

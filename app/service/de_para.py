@@ -6,16 +6,20 @@ Este arquivo não sabe nada sobre nenhuma imobiliária específica —
 toda lógica particular fica em app/imobiliarias/<nome>/extrator.py e matcher.py.
 """
 
-import psycopg2
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text
 import pandas as pd
 import os
 
-from app.config import env
 from app.imobiliarias import registry
-from app.imobiliarias.barcellos.extrator import extrair_boleto
 from app.utils.normalizacao import montar_periodo_competencia, normalizar_competencia
+from app.repositories.conexao import conectar_banco
+from app.repositories.consultas import (
+    buscar_cod_imovel_de_para,
+    buscar_id_administradora,
+    upsert_imovel,
+    inserir_boleto,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -55,41 +59,6 @@ def _extrair_tabela_imobiliar(cnpj: str, data_inicio: str, data_fim: str, compet
         raise RuntimeError(f"Falha ao consultar tabela do Imobiliar: {e}") from e
 
 
-def _buscar_id_administradora(cursor, cnpj: str):
-    cursor.execute("SELECT id FROM taxa_120_administradoras WHERE cnpj = %s", (cnpj,))
-    row = cursor.fetchone()
-    return row[0] if row else None
-
-
-def _inserir_boleto(cursor, nome_boleto: str, cod_imovel: float, competencia: str):
-    cursor.execute(
-        "INSERT INTO public.taxa_120_boletos (nome_boleto, cod_imovel, competencia) VALUES (%s, %s, %s)",
-        (nome_boleto, cod_imovel, competencia)
-    )
-
-
-def _upsert_imovel(cursor, id_administradora, cod_imovel, boleto, match):
-    cursor.execute("SELECT id FROM taxa_120_imoveis WHERE cod_imovel = %s", (cod_imovel,))
-    if cursor.fetchone():
-        cursor.execute(
-            """UPDATE taxa_120_imoveis
-               SET condominio = %s, endereco = %s, complemento = %s,
-                   nome_locador = %s, documento_locador = %s
-               WHERE cod_imovel = %s""",
-            (boleto.nome_predio, boleto.endereco_imovel or "", boleto.complemento,
-             boleto.nome_condomino, match['documento_locador'], cod_imovel)
-        )
-    else:
-        cursor.execute(
-            """INSERT INTO taxa_120_imoveis
-               (id_administradora, cod_imovel, condominio, endereco, complemento, nome_locador, documento_locador)
-               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-            (id_administradora, cod_imovel, boleto.nome_predio,
-             boleto.endereco_imovel or "", boleto.complemento,
-             boleto.nome_condomino, match['documento_locador'])
-        )
-
-
 # ---------------------------------------------------------------------------
 # Função principal
 # ---------------------------------------------------------------------------
@@ -116,20 +85,14 @@ def registrar_relacao_de_para(cnpj: str, logger) -> list:
         logger.alerta("Processamento", f"Nenhum PDF encontrado para {cfg.NOME}")
         return []
 
-    conn = psycopg2.connect(
-        host=env("DB_HOST"),
-        port=env("DB_PORT"),
-        database=env("DB_BANCO"),
-        user=env("DB_USER"),
-        password=env("DB_SENHA")
-    )
+    conn = conectar_banco()
 
     boletos = []
 
     try:
         with conn:
             with conn.cursor() as cursor:
-                id_adm = _buscar_id_administradora(cursor, cnpj)
+                id_adm = buscar_id_administradora(cursor, cnpj)
 
                 for arquivo in arquivos:
                     try:
@@ -157,20 +120,15 @@ def registrar_relacao_de_para(cnpj: str, logger) -> list:
                     )
 
                     # Verifica se já existe mapeamento no banco
-                    cursor.execute(
-                        """SELECT cod_imovel FROM taxa_120_imoveis
-                           WHERE condominio = %s AND endereco = %s
-                             AND complemento = %s AND nome_locador = %s
-                             AND id_administradora = %s
-                           LIMIT 1""",
-                        (boleto.nome_predio, boleto.endereco_imovel,
-                         boleto.complemento, boleto.nome_condomino, id_adm)
+                    registro = buscar_cod_imovel_de_para(
+                        cursor,
+                        boleto.nome_predio, boleto.endereco_imovel,
+                        boleto.complemento, boleto.nome_condomino,
+                        id_adm
                     )
-                    registro = cursor.fetchone()
-
-                    if registro and registro[0] not in (None, 0, 0.0):
-                        _inserir_boleto(cursor, arquivo.name, registro[0], competencia)
-                        logger.sucesso("Boleto", f"Imóvel já mapeado ({registro[0]}). Pulando similaridade.")
+                    if registro and registro not in (None, 0, 0.0):
+                        inserir_boleto(cursor, arquivo.name, registro, competencia)
+                        logger.sucesso("Boleto", f"Imóvel já mapeado ({registro}). Pulando similaridade.")
                         boletos.append(boleto)
                         continue
 
@@ -194,14 +152,14 @@ def registrar_relacao_de_para(cnpj: str, logger) -> list:
                             )
                             cod_imovel = 0.0
 
-                        _upsert_imovel(cursor, id_adm, cod_imovel, boleto, match)
-                        _inserir_boleto(cursor, arquivo.name, cod_imovel, competencia)
+                        upsert_imovel(cursor, id_adm, cod_imovel, boleto, str(match['documento_locador']))
+                        inserir_boleto(cursor, arquivo.name, cod_imovel, competencia)
                         boletos.append(boleto)
                         continue
 
                     cod_imovel = float(match['codimovel'])
-                    _upsert_imovel(cursor, id_adm, cod_imovel, boleto, match)
-                    _inserir_boleto(cursor, arquivo.name, cod_imovel, competencia)
+                    upsert_imovel(cursor, id_adm, cod_imovel, boleto, match)
+                    inserir_boleto(cursor, arquivo.name, cod_imovel, competencia)
                     logger.sucesso("Boleto", f"'{arquivo.name}' → imóvel {cod_imovel}")
                     boletos.append(boleto)
 

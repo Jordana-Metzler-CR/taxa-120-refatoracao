@@ -1,6 +1,9 @@
 # ---------------------------------------------------------------------------
 # Normalização de nomes de taxas
 # ---------------------------------------------------------------------------
+import re
+
+
 _NORMALIZACOES_TAXA = [
     (lambda t: 'CONDOMINIO' in t or 'CONDOMÍNIO' in t,                                         'CONDOMINIO'),
     (lambda t: 'GÁS' in t or 'GAS' in t,                                                       'GAS'),
@@ -32,3 +35,19 @@ _NORMALIZACOES_TAXA = [
     (lambda t: ('MANUT' in t and 'CONSERV' in t) or ('FECHO' in t and 'JANELA' in t)
                or ('FUNDO' in t and 'MANUTEN' in t),                                           'FUNDO MANUTENCAO'),
 ]
+
+
+
+def _safe_search(pattern, text, group=0):
+    m = re.search(pattern, text)
+    return m.group(group).strip() if m else None
+
+
+
+
+def _normalizar_taxa(taxa: str) -> str:                                 
+    t = taxa.upper()
+    for condicao, nome in _NORMALIZACOES_TAXA:
+        if condicao(t):
+            return nome
+    return taxa.strip()

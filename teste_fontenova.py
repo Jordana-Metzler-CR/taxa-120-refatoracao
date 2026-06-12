@@ -1,4 +1,4 @@
-from app.imobiliarias.fontenova.extrator import extrair_boleto
+from app.imobiliarias.barcellos.extrator import extrair_boleto
 from app.utils.normalizacao import normalizar_competencia
 class LoggerFake:
     def sucesso(self, etapa, msg):
@@ -8,7 +8,7 @@ class LoggerFake:
         print(f"[ERRO] {etapa} - {msg}")
 
 
-pdf_path = r"C:\Users\jordana.metzler\Downloads\Boletos Fonte Nova - 05_06_2026_pagina_10.pdf"
+pdf_path = r"\\192.168.150.12\dados\CREDITO REAL\SETORES\CONTABILIDADE FISCAL\SETOR\Condomínios\Novas Locações\TAXA 120\PROCESSADOS\Boletos Barcellos - 10_06_2026_pagina_55.pdf"
 
 logger = LoggerFake()
 

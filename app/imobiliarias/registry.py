@@ -15,6 +15,7 @@ from app.imobiliarias.fontenova import config as cfg_fontenova
 from app.imobiliarias.fontenova import extrator as ext_fontenova
 from app.imobiliarias.fontenova import matcher as mtc_fontenova
 
+
 # Cada entrada expõe: config, extrator, matcher
 IMOBILIARIAS = {
     cfg_barcellos.CNPJ: {

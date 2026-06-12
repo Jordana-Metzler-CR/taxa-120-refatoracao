@@ -8,9 +8,6 @@ Sistema de automação que lê boletos de condomínio recebidos por e-mail, extr
 
 - [Como funciona](#como-funciona)
 - [Estrutura do projeto](#estrutura-do-projeto)
-- [Pré-requisitos](#pré-requisitos)
-- [Configuração](#configuração)
-- [Como executar](#como-executar)
 - [Endpoints](#endpoints)
 - [Refatoração](#refatoração)
 

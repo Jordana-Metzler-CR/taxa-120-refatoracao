@@ -1,4 +1,4 @@
-# Taxa 120 — RPA de Lançamento de Taxas Condominiais
+# Taxa 120 — RPA de Lançamento de Taxas de Condomínio
 
 Sistema de automação que lê boletos de condomínio recebidos por e-mail, extrai os dados via PDF, mapeia cada imóvel no sistema Imobiliar e lança as taxas automaticamente — eliminando o processo manual de digitação. Suporta múltiplas imobiliárias com lógica de extração e similaridade isolada por administradora.
 
